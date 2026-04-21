@@ -1,0 +1,21 @@
+name: Deploy docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+      - 'README.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  docs:
+    uses: oddship/moat/.github/workflows/build-docs.yml@9885e53f94c5179044889e59ee1e9b0394b6e5be
+    with:
+      docs_dir: docs

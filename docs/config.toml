@@ -1,0 +1,21 @@
+site_name = "stargazers-action"
+base_path = "/stargazers-action"
+
+[[links]]
+title = "GitHub"
+url = "https://github.com/oddship/stargazers-action"
+icon = "github"
+
+[[links]]
+title = "Examples"
+url = "https://github.com/oddship/stargazers-action/tree/main/examples"
+icon = "code"
+
+[[topnav]]
+title = "GitHub"
+url = "https://github.com/oddship/stargazers-action"
+icon = "github"
+
+[extra]
+tagline = "Recent GitHub stargazers as JSON, RSS, and Discord notifications."
+footer = '&copy; <a href="https://github.com/oddship">oddship</a>'

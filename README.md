@@ -2,6 +2,8 @@
 
 Generate recent GitHub stargazer data and optional Discord notifications.
 
+**Docs:** https://oddship.github.io/stargazers-action/
+
 This project now works in three forms:
 
 - **GitHub Action** for scheduled builds and deploy workflows
@@ -181,8 +183,10 @@ stargazers discord \
 
 ## Library usage
 
+This repo is **not published to npm yet**. The library surface is meant for repo-local or workspace use.
+
 ```ts
-import { execute, resolveConfig, consoleLogger } from "stargazers-action";
+import { execute, resolveConfig, consoleLogger } from "./dist/lib.js";
 
 const config = await resolveConfig({
   mode: "generate-and-discord",
