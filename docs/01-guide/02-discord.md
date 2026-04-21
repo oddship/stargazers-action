@@ -27,6 +27,15 @@ Defaults:
 - `discord_notify_mode: summary`
 - Discord mentions disabled via `allowed_mentions.parse = []`
 
+## State retention cap (`state_max_entries`)
+
+For writable backends (`file`, `github-branch`), seen event ids are persisted in `state_path` as a bounded list.
+
+- default cap: `500`
+- maximum cap: `5000`
+
+When the list reaches the cap, the oldest ids are dropped. `state.json` stays bounded instead of growing forever.
+
 ## Recommended GitHub Actions pattern
 
 For production sites, the safest pattern is:

@@ -53,12 +53,23 @@ Direct inputs override config-file values.
 | --- | --- |
 | `state_backend` | `file`, `feed-url`, or `github-branch` |
 | `state_path` | state file path for `file` / `github-branch` |
-| `state_max_entries` | default `500` |
+| `state_max_entries` | retained seen-id cap for writable state (`file` / `github-branch`), default `500`, max `5000` |
 | `baseline_feed_url` | required for `feed-url` |
 | `state_repository` | defaults to `GITHUB_REPOSITORY` for `github-branch` |
 | `state_branch` | defaults to `stargazers-state` |
 | `state_token` | defaults to `token` |
 | `state_commit_message` | optional |
+
+### State retention behavior
+
+For writable state backends (`file`, `github-branch`), the state file stores a deduplicated list of seen event ids (newest first), not an unbounded event log.
+
+On every run, seen ids from the current snapshot are merged with the previous state and truncated to `state_max_entries`.
+
+- default cap: `500`
+- maximum cap: `5000`
+
+When the cap is reached, the oldest ids are dropped.
 
 ## Action outputs
 

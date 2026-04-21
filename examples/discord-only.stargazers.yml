@@ -8,5 +8,7 @@ per_repo_limit: 40
 state_backend: github-branch
 state_branch: stargazers-state
 state_path: .stargazers/state.json
+# optional retention cap for writable state (default 500, max 5000)
+state_max_entries: 500
 discord_bootstrap: silent
 discord_notify_mode: summary

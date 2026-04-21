@@ -58,6 +58,8 @@ Defaults:
 Notes:
 
 - `github-branch` requires workflow `permissions: contents: write`.
+- Writable backends (`file`, `github-branch`) keep a bounded seen-id list in `state_path`; `state_max_entries` defaults to `500` and is capped at `5000`.
+- The state file is intentionally not an unbounded event log; oldest ids are dropped when the cap is reached.
 - Writable backends (`file`, `github-branch`) use a pending marker before Discord delivery so a failed state-finalization step does not resend duplicates on the next run.
 - If a writable backend is left with a pending batch, the next run stops instead of guessing whether Discord already received the prior notification.
 - `feed-url` is read-only; if you rerun before the published feed baseline advances, duplicates are still possible.
@@ -264,7 +266,7 @@ Direct inputs override config-file values.
 |---|---|
 | `state_backend` | `file`, `feed-url`, or `github-branch` (`github-branch` needs `contents: write`) |
 | `state_path` | state file path for `file` / `github-branch` |
-| `state_max_entries` | default `500` |
+| `state_max_entries` | retained seen-id cap for writable state (`file` / `github-branch`); default `500`, max `5000` |
 | `baseline_feed_url` | required for `feed-url` |
 | `state_repository` | defaults to `GITHUB_REPOSITORY` for `github-branch` |
 | `state_branch` | defaults to `stargazers-state` |
