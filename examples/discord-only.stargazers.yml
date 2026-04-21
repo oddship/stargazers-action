@@ -1,0 +1,12 @@
+mode: discord
+owner: oddship
+repo_exclude:
+  - oddship.net
+  - stargazers-action
+recent_limit: 40
+per_repo_limit: 40
+state_backend: github-branch
+state_branch: stargazers-state
+state_path: .stargazers/state.json
+discord_bootstrap: silent
+discord_notify_mode: summary

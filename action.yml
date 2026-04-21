@@ -1,8 +1,11 @@
 name: GitHub Stargazers Feed
-description: Generate recent GitHub stargazer JSON and RSS files for static sites.
+description: Generate recent GitHub stargazer JSON/RSS files and optional Discord notifications.
 author: Oddship
 
 inputs:
+  mode:
+    description: Execution mode (generate, discord, or generate-and-discord).
+    required: false
   owner:
     description: GitHub user or organization login to inspect.
     required: false
@@ -42,6 +45,45 @@ inputs:
   feed_description:
     description: Description for the generated RSS feed.
     required: false
+  state_backend:
+    description: Notification state backend (file, feed-url, or github-branch).
+    required: false
+  state_path:
+    description: State file path for file/github-branch backends.
+    required: false
+  state_max_entries:
+    description: Maximum number of seen event ids retained in state.
+    required: false
+  baseline_feed_url:
+    description: Existing feed URL used as a read-only baseline for diffing.
+    required: false
+  state_repository:
+    description: Repository used by the github-branch state backend.
+    required: false
+  state_branch:
+    description: Branch used by the github-branch state backend.
+    required: false
+  state_token:
+    description: Token used by the github-branch state backend.
+    required: false
+  state_commit_message:
+    description: Commit message used when persisting github-branch state.
+    required: false
+  discord_webhook_url:
+    description: Discord webhook execute URL.
+    required: false
+  discord_username:
+    description: Optional username override for Discord messages.
+    required: false
+  discord_avatar_url:
+    description: Optional avatar override for Discord messages.
+    required: false
+  discord_bootstrap:
+    description: Bootstrap behavior for first run (silent or send-all).
+    required: false
+  discord_notify_mode:
+    description: Discord delivery mode (summary or per-star).
+    required: false
   config:
     description: Optional YAML or JSON config file, relative to GITHUB_WORKSPACE.
     required: false
@@ -50,6 +92,8 @@ inputs:
     required: false
 
 outputs:
+  mode:
+    description: Effective execution mode.
   json-path:
     description: Relative JSON output path.
   feed-path:
@@ -57,9 +101,15 @@ outputs:
   feed-url:
     description: Public feed URL derived from site_url + feed_output.
   repo-count:
-    description: Number of selected repositories included in the feed.
+    description: Number of selected repositories included in the snapshot.
   star-count:
-    description: Number of recent star events emitted.
+    description: Number of recent star events emitted in the snapshot.
+  new-event-count:
+    description: Number of new events detected against the configured baseline.
+  discord-message-count:
+    description: Number of Discord webhook messages sent.
+  state-backend:
+    description: Effective notification state backend.
 
 runs:
   using: node24

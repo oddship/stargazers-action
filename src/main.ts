@@ -1,17 +1,22 @@
 import * as core from "@actions/core";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { resolveConfig } from "./config.js";
-import { renderRssFeed } from "./feed.js";
-import { fetchRecentStarsForRepository, listOwnedRepositories } from "./github.js";
-import { buildGeneratedData, normalizeStars, selectRepositories } from "./model.js";
+import { execute } from "./run.js";
 
-async function ensureParentDirectory(filePath: string): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-}
+const actionLogger = {
+  info(message: string): void {
+    core.info(message);
+  },
+  warn(message: string): void {
+    core.warning(message);
+  },
+  error(message: string): void {
+    core.error(message);
+  },
+};
 
 async function run(): Promise<void> {
   const inputNames = [
+    "mode",
     "owner",
     "owner_type",
     "repo_include",
@@ -25,63 +30,42 @@ async function run(): Promise<void> {
     "site_url",
     "feed_title",
     "feed_description",
+    "state_backend",
+    "state_path",
+    "state_max_entries",
+    "baseline_feed_url",
+    "state_repository",
+    "state_branch",
+    "state_token",
+    "state_commit_message",
+    "discord_webhook_url",
+    "discord_username",
+    "discord_avatar_url",
+    "discord_bootstrap",
+    "discord_notify_mode",
     "config",
     "token",
   ];
 
   const rawInputs = Object.fromEntries(inputNames.map((name) => [name, core.getInput(name)]));
   const config = await resolveConfig(rawInputs);
+  const result = await execute(config, actionLogger);
 
-  core.info(`Discovering public repositories for ${config.owner}...`);
-  const { owner, repos } = await listOwnedRepositories(config);
+  core.setOutput("mode", config.mode);
+  core.setOutput("repo-count", String(result.snapshot.stats.repoCount));
+  core.setOutput("star-count", String(result.snapshot.stats.starCount));
+  core.setOutput("new-event-count", String(result.newEvents.length));
+  core.setOutput("discord-message-count", String(result.discordMessagesSent));
 
-  if (config.repoInclude.length > 0) {
-    const discoveredRepoNames = new Set(repos.map((repo) => repo.name.toLowerCase()));
-    const missingIncludes = config.repoInclude.filter((repoName) => !discoveredRepoNames.has(repoName));
-    if (missingIncludes.length > 0) {
-      core.warning(`Requested repos not found or not public: ${missingIncludes.join(", ")}`);
-    }
+  if (config.state) {
+    core.setOutput("state-backend", config.state.backend);
   }
 
-  const selectedRepos = selectRepositories(repos, config);
-
-  if (selectedRepos.length === 0) {
-    core.warning("No repositories matched the current stargazer configuration.");
+  if (config.generation) {
+    core.setOutput("json-path", config.generation.jsonOutput);
+    core.setOutput("feed-path", config.generation.feedOutput);
+    core.setOutput("feed-url", config.generation.feedUrl);
   }
-
-  core.info(`Selected ${selectedRepos.length} repositories out of ${repos.length}.`);
-
-  const fetchedCounts = new Map<string, number>();
-  const allStars = [] as Awaited<ReturnType<typeof fetchRecentStarsForRepository>>;
-
-  for (const repo of selectedRepos) {
-    const stars = await fetchRecentStarsForRepository(config, repo);
-    fetchedCounts.set(repo.nameWithOwner, stars.length);
-    allStars.push(...stars);
-  }
-
-  const recentStars = normalizeStars(allStars, config.recentLimit);
-  const data = buildGeneratedData({
-    config,
-    owner,
-    repos: selectedRepos,
-    starEvents: recentStars,
-    fetchedCounts,
-  });
-
-  await ensureParentDirectory(config.jsonOutputPath);
-  await ensureParentDirectory(config.feedOutputPath);
-
-  await writeFile(config.jsonOutputPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  await writeFile(config.feedOutputPath, renderRssFeed(data), "utf8");
-
-  core.setOutput("json-path", config.jsonOutput);
-  core.setOutput("feed-path", config.feedOutput);
-  core.setOutput("feed-url", config.feedUrl);
-  core.setOutput("repo-count", String(data.stats.repoCount));
-  core.setOutput("star-count", String(data.stats.starCount));
-
-  core.info(`Wrote ${data.stats.starCount} star events to ${config.jsonOutput} and ${config.feedOutput}.`);
 }
 
 run().catch((error: unknown) => {

@@ -1,4 +1,5 @@
-import * as core from "@actions/core";
+import type { Logger } from "./logger.js";
+import { silentLogger } from "./logger.js";
 import type { OwnerSummary, RepositorySummary, ResolvedConfig, StarEvent } from "./types.js";
 
 const GITHUB_GRAPHQL_ENDPOINT = "https://api.github.com/graphql";
@@ -77,6 +78,7 @@ function normalizeOwnerType(value: string): OwnerSummary["type"] {
 
 export async function listOwnedRepositories(
   config: ResolvedConfig,
+  logger: Logger = silentLogger,
 ): Promise<{ owner: OwnerSummary; repos: RepositorySummary[] }> {
   const repos: RepositorySummary[] = [];
   let cursor: string | null = null;
@@ -172,7 +174,7 @@ export async function listOwnedRepositories(
   if (config.ownerTypeHint !== "auto") {
     const normalizedHint = config.ownerTypeHint === "user" ? "User" : "Organization";
     if (owner.type !== normalizedHint) {
-      core.warning(`owner_type=${config.ownerTypeHint} but GitHub returned ${owner.type}. Continuing with GitHub's value.`);
+      logger.warn(`owner_type=${config.ownerTypeHint} but GitHub returned ${owner.type}. Continuing with GitHub's value.`);
     }
   }
 
@@ -182,12 +184,13 @@ export async function listOwnedRepositories(
 export async function fetchRecentStarsForRepository(
   config: ResolvedConfig,
   repo: RepositorySummary,
+  logger: Logger = silentLogger,
 ): Promise<StarEvent[]> {
   if (repo.stargazerCount === 0) {
     return [];
   }
 
-  core.info(`Fetching recent stargazers for ${repo.nameWithOwner}...`);
+  logger.info(`Fetching recent stargazers for ${repo.nameWithOwner}...`);
 
   const query = /* GraphQL */ `
     query RepositoryRecentStars($owner: String!, $name: String!, $limit: Int!) {
@@ -217,7 +220,7 @@ export async function fetchRecentStarsForRepository(
   );
 
   if (!data.repository) {
-    core.warning(`Skipping ${repo.nameWithOwner}: repository no longer available.`);
+    logger.warn(`Skipping ${repo.nameWithOwner}: repository no longer available.`);
     return [];
   }
 

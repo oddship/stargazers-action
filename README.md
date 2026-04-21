@@ -1,78 +1,68 @@
 # stargazers-action
 
-Generate recent GitHub stargazer data for static sites.
+Generate recent GitHub stargazer data and optional Discord notifications.
 
-This action discovers public repositories for a GitHub user or organization, fetches recent stargazer events, and writes:
+This project now works in three forms:
 
-- a JSON file for site templates
-- an RSS feed for feed readers
+- **GitHub Action** for scheduled builds and deploy workflows
+- **CLI** for cron jobs and local scripts
+- **library** for custom Node/TypeScript integrations
 
-It is designed for static sites that build in GitHub Actions, including Astro and Zola.
+It discovers public repositories for a GitHub user or organization, fetches recent stargazer events, and can:
+
+- write a JSON file for site templates
+- write an RSS feed for feed readers
+- diff the current snapshot against prior state
+- post only **new** events to Discord
 
 ## Why this exists
 
-GitHub does not offer a built-in account-wide feed for “people starred one of my repos”. This action fills that gap with a build-time generator.
+GitHub does not offer a built-in account-wide feed for “people recently starred one of my repos”. This project fills that gap with reusable fetch, render, diff, and notify primitives.
 
-## Outputs
+## Execution modes
 
-The action writes two files into `GITHUB_WORKSPACE`:
+| Mode | What it does |
+|---|---|
+| `generate` | fetch snapshot and write JSON + RSS |
+| `discord` | fetch snapshot, diff against baseline, send Discord only |
+| `generate-and-discord` | do both |
 
-- `json_output` — structured data for templates/pages
-- `feed_output` — RSS 2.0 XML
+Default mode is `generate`.
 
-It also sets step outputs:
+## State backends
 
-- `json-path`
-- `feed-path`
-- `feed-url`
-- `repo-count`
-- `star-count`
+Discord delivery is diff-based, not firehose-based.
 
-## Inputs
+A **new event** is determined by the stable event id:
 
-| Input | Required | Notes |
-|---|---|---|
-| `owner` | yes* | GitHub user or org login |
-| `owner_type` | no | `user`, `organization`, or `auto` |
-| `repo_include` | no | comma/newline list |
-| `repo_exclude` | no | comma/newline list |
-| `recent_limit` | no | default `40` |
-| `per_repo_limit` | no | default `min(max(recent_limit, 40), 100)`; GitHub GraphQL caps this at `100` |
-| `include_forks` | no | default `false` |
-| `include_archived` | no | default `false` |
-| `json_output` | yes* | relative to workspace |
-| `feed_output` | yes* | relative to workspace |
-| `site_url` | yes* | canonical site URL |
-| `feed_title` | no | defaults to `<owner> GitHub stargazers` |
-| `feed_description` | no | sensible default |
-| `config` | no | YAML or JSON file relative to workspace |
-| `token` | yes* | `${{ github.token }}` is enough for public repos |
-
-`*` Required either directly as an input or via `config`.
-
-All file paths must stay inside `GITHUB_WORKSPACE`. Absolute paths and traversal outside the workspace are rejected.
-
-## Config file example
-
-Create `.github/stargazers.yml` in the consumer repo:
-
-```yaml
-owner: oddship
-repo_exclude:
-  - oddship.net
-  - stargazers-action
-recent_limit: 40
-per_repo_limit: 40
-include_forks: false
-include_archived: false
-json_output: src/generated/github-stars.json
-feed_output: public/feeds/github-stars.xml
-site_url: https://oddship.net
-feed_title: Oddship GitHub stargazers
-feed_description: Recent GitHub stargazers across selected Oddship projects.
+```text
+{repo.nameWithOwner}:{user.login}:{starredAt}
 ```
 
-## Astro usage
+The notifier compares the current snapshot against one of these baseline backends:
+
+| Backend | Best for |
+|---|---|
+| `file` | local scripts, cron, generic CLI usage |
+| `feed-url` | deployed sites that already publish the RSS feed |
+| `github-branch` | Discord-only GitHub Action users with no site/feed |
+
+Defaults:
+
+- bootstrap mode: `silent`
+- notify mode: `summary`
+- Discord mentions disabled via `allowed_mentions.parse = []`
+
+Notes:
+
+- `github-branch` requires workflow `permissions: contents: write`.
+- Writable backends (`file`, `github-branch`) use a pending marker before Discord delivery so a failed state-finalization step does not resend duplicates on the next run.
+- If a writable backend is left with a pending batch, the next run stops instead of guessing whether Discord already received the prior notification.
+- `feed-url` is read-only; if you rerun before the published feed baseline advances, duplicates are still possible.
+
+## GitHub Action usage
+
+### Generate JSON + RSS for a site
 
 ```yaml
 jobs:
@@ -82,7 +72,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Generate stargazer feed
-        uses: oddship/stargazers-action@<pinned-ref>
+        uses: oddship/stargazers-action@<pinned-sha>
         with:
           config: .github/stargazers.yml
           token: ${{ github.token }}
@@ -94,33 +84,210 @@ jobs:
         run: nix build .#default
 ```
 
-## Zola usage
+Example config:
+
+```yaml
+owner: oddship
+repo_exclude:
+  - oddship.net
+  - stargazers-action
+recent_limit: 40
+per_repo_limit: 40
+json_output: src/generated/github-stars.json
+feed_output: public/feeds/github-stars.xml
+site_url: https://oddship.net
+feed_title: Oddship GitHub stargazers
+feed_description: Recent GitHub stargazers across selected Oddship projects.
+```
+
+### Discord-only GitHub Action
+
+This is the default path for people who want notifications but do **not** have a site/feed.
 
 ```yaml
 jobs:
-  deploy:
+  notify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
 
-      - name: Generate stargazer feed
-        uses: oddship/stargazers-action@<pinned-ref>
+      - name: Notify Discord about new stargazers
+        uses: oddship/stargazers-action@<pinned-sha>
         with:
-          config: .github/stargazers.yml
+          mode: discord
+          owner: oddship
+          repo_exclude: oddship.net,stargazers-action
+          state_backend: github-branch
+          state_branch: stargazers-state
+          discord_webhook_url: ${{ secrets.DISCORD_STARGAZERS_WEBHOOK }}
           token: ${{ github.token }}
-
-      - name: Stage generated files for Nix flakes
-        run: git add -f data/github-stars.json static/feeds/github-stars.xml
-
-      - name: Build site
-        run: nix build .#default
 ```
 
-Pin `<pinned-ref>` to an immutable commit SHA or a release tag.
+The `github-branch` backend stores seen event ids in a tiny state file on a dedicated branch so reruns do not resend old events. It must have `contents: write` permission.
 
-### Why the `git add -f` step?
+### Post-deploy Discord notifications using the deployed feed as baseline
 
-If your site builds through a Nix flake, generated files may need to be staged so the flake source includes them during `nix build`.
+If you already publish the feed, run Discord after a successful deploy:
+
+```yaml
+- name: Notify Discord
+  if: success()
+  uses: oddship/stargazers-action@<pinned-sha>
+  with:
+    mode: discord
+    config: .github/stargazers.yml
+    state_backend: feed-url
+    baseline_feed_url: https://oddship.net/feeds/github-stars.xml
+    discord_webhook_url: ${{ secrets.DISCORD_STARGAZERS_WEBHOOK }}
+    token: ${{ github.token }}
+```
+
+## CLI usage
+
+Build first:
+
+```bash
+npm install
+npm run build
+```
+
+Then run:
+
+```bash
+./dist/cli.cjs generate --config .github/stargazers.yml --token "$GITHUB_TOKEN"
+./dist/cli.cjs discord --config .github/stargazers.yml --discord-webhook-url "$DISCORD_WEBHOOK_URL"
+./dist/cli.cjs generate-and-discord --config .github/stargazers.yml
+```
+
+The installed bin name is:
+
+```bash
+stargazers
+```
+
+Useful local-script pattern:
+
+```bash
+stargazers discord \
+  --owner oddship \
+  --repo-exclude oddship.net,stargazers-action \
+  --state-backend file \
+  --state-path .stargazers/state.json \
+  --discord-webhook-url "$DISCORD_WEBHOOK_URL" \
+  --token "$GITHUB_TOKEN"
+```
+
+## Library usage
+
+```ts
+import { execute, resolveConfig, consoleLogger } from "stargazers-action";
+
+const config = await resolveConfig({
+  mode: "generate-and-discord",
+  owner: "oddship",
+  json_output: "src/generated/github-stars.json",
+  feed_output: "public/feeds/github-stars.xml",
+  site_url: "https://oddship.net",
+  state_backend: "file",
+  state_path: ".stargazers/state.json",
+  discord_webhook_url: process.env.DISCORD_WEBHOOK_URL,
+  token: process.env.GITHUB_TOKEN,
+});
+
+const result = await execute(config, consoleLogger);
+console.log(result.newEvents.length);
+```
+
+Important exports:
+
+- `resolveConfig(...)`
+- `execute(...)`
+- `fetchStarsSnapshot(...)`
+- `renderRssFeed(...)`
+- `buildDiscordMessages(...)`
+- `loadState(...)`
+- `saveState(...)`
+- `diffSnapshotAgainstState(...)`
+
+## Configuration
+
+All settings can come from either:
+
+- action inputs / CLI flags
+- a YAML or JSON config file
+
+Direct inputs override config-file values.
+
+### Common keys
+
+| Key | Notes |
+|---|---|
+| `owner` | required |
+| `owner_type` | `user`, `organization`, or `auto` |
+| `repo_include` | comma/newline list |
+| `repo_exclude` | comma/newline list |
+| `recent_limit` | global emitted event cap |
+| `per_repo_limit` | per-repo GraphQL fetch cap, max `100` |
+| `include_forks` | default `false` |
+| `include_archived` | default `false` |
+| `token` | GitHub token for GraphQL |
+
+### Generate keys
+
+| Key | Notes |
+|---|---|
+| `json_output` | relative to workspace |
+| `feed_output` | relative to workspace |
+| `site_url` | required for RSS metadata |
+| `feed_title` | optional |
+| `feed_description` | optional |
+
+### Discord keys
+
+| Key | Notes |
+|---|---|
+| `discord_webhook_url` | required when mode includes Discord |
+| `discord_bootstrap` | `silent` or `send-all` |
+| `discord_notify_mode` | `summary` or `per-star` |
+| `discord_username` | optional |
+| `discord_avatar_url` | optional |
+
+### State keys
+
+| Key | Notes |
+|---|---|
+| `state_backend` | `file`, `feed-url`, or `github-branch` (`github-branch` needs `contents: write`) |
+| `state_path` | state file path for `file` / `github-branch` |
+| `state_max_entries` | default `500` |
+| `baseline_feed_url` | required for `feed-url` |
+| `state_repository` | defaults to `GITHUB_REPOSITORY` for `github-branch` |
+| `state_branch` | defaults to `stargazers-state` |
+| `state_token` | defaults to `token` |
+| `state_commit_message` | optional |
+
+## Example configs
+
+See:
+
+- `examples/oddship.net.stargazers.yml`
+- `examples/rohanverma.net.stargazers.yml`
+- `examples/discord-only.stargazers.yml`
+
+## Outputs
+
+The GitHub Action sets:
+
+- `mode`
+- `json-path`
+- `feed-path`
+- `feed-url`
+- `repo-count`
+- `star-count`
+- `new-event-count`
+- `discord-message-count`
+- `state-backend`
 
 ## JSON shape
 
@@ -152,19 +319,24 @@ If your site builds through a Nix flake, generated files may need to be staged s
 }
 ```
 
+## Security notes
+
+- Do **not** commit Discord webhook URLs.
+- Use GitHub Secrets or local environment variables.
+- If a webhook URL is pasted into chat, logs, or a public repo, rotate it.
+
 ## Development
 
 ```bash
 npm install
 npm run lint
-npm test
+TMPDIR=/dev/shm npm test
 npm run build
 ```
 
-To run it locally against a checked-out site repo:
+Local generate-only run:
 
 ```bash
-cd /path/to/stargazers-action
 GITHUB_WORKSPACE=/path/to/site \
 INPUT_CONFIG=.github/stargazers.yml \
 INPUT_TOKEN="$(gh auth token)" \

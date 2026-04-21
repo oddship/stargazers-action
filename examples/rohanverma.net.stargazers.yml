@@ -1,3 +1,4 @@
+mode: generate
 owner: rhnvrm
 repo_include:
   - rohanverma.net
