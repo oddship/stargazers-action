@@ -1,0 +1,70 @@
+name: GitHub Stargazers Feed
+description: Generate recent GitHub stargazer JSON and RSS files for static sites.
+author: Oddship
+
+inputs:
+  owner:
+    description: GitHub user or organization login to inspect.
+    required: false
+  owner_type:
+    description: Optional owner type hint (user, organization, or auto).
+    required: false
+  repo_include:
+    description: Comma or newline separated repo names to include.
+    required: false
+  repo_exclude:
+    description: Comma or newline separated repo names to exclude.
+    required: false
+  recent_limit:
+    description: Maximum number of recent star events to emit globally.
+    required: false
+  per_repo_limit:
+    description: Maximum number of recent star events to fetch per repo.
+    required: false
+  include_forks:
+    description: Include fork repositories when discovering repos.
+    required: false
+  include_archived:
+    description: Include archived repositories when discovering repos.
+    required: false
+  json_output:
+    description: Output path for generated JSON, relative to GITHUB_WORKSPACE.
+    required: false
+  feed_output:
+    description: Output path for generated RSS XML, relative to GITHUB_WORKSPACE.
+    required: false
+  site_url:
+    description: Canonical site URL used for feed metadata.
+    required: false
+  feed_title:
+    description: Title for the generated RSS feed.
+    required: false
+  feed_description:
+    description: Description for the generated RSS feed.
+    required: false
+  config:
+    description: Optional YAML or JSON config file, relative to GITHUB_WORKSPACE.
+    required: false
+  token:
+    description: GitHub token used for GraphQL requests.
+    required: false
+
+outputs:
+  json-path:
+    description: Relative JSON output path.
+  feed-path:
+    description: Relative RSS output path.
+  feed-url:
+    description: Public feed URL derived from site_url + feed_output.
+  repo-count:
+    description: Number of selected repositories included in the feed.
+  star-count:
+    description: Number of recent star events emitted.
+
+runs:
+  using: node20
+  main: dist/index.cjs
+
+branding:
+  icon: star
+  color: blue

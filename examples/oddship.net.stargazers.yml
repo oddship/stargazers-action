@@ -1,0 +1,13 @@
+owner: oddship
+repo_exclude:
+  - oddship.net
+  - stargazers-action
+recent_limit: 40
+per_repo_limit: 40
+include_forks: false
+include_archived: false
+json_output: src/generated/github-stars.json
+feed_output: public/feeds/github-stars.xml
+site_url: https://oddship.net
+feed_title: Oddship GitHub stargazers
+feed_description: Recent GitHub stargazers across selected Oddship projects.
