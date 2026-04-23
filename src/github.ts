@@ -3,6 +3,9 @@ import { silentLogger } from "./logger.js";
 import type { OwnerSummary, RepositorySummary, ResolvedConfig, StarEvent } from "./types.js";
 
 const GITHUB_GRAPHQL_ENDPOINT = "https://api.github.com/graphql";
+const MAX_GRAPHQL_ATTEMPTS = 4;
+const INITIAL_RETRY_DELAY_MS = 1000;
+const RETRYABLE_GRAPHQL_STATUSES = new Set([500, 502, 503, 504]);
 
 type RepositoryOwnerResponse = {
   repositoryOwner: {
@@ -42,31 +45,86 @@ type RepositoryStarsResponse = {
   } | null;
 };
 
-async function requestGraphQL<T>(query: string, variables: Record<string, unknown>, token: string): Promise<T> {
-  const response = await fetch(GITHUB_GRAPHQL_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/vnd.github+json",
-      "User-Agent": "oddship-stargazers-action",
-    },
-    body: JSON.stringify({ query, variables }),
+type GraphQLOperationContext = {
+  operation: string;
+  logger?: Logger;
+};
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
   });
+}
 
-  if (!response.ok) {
-    throw new Error(`GitHub GraphQL request failed with ${response.status} ${response.statusText}.`);
+function getRetryDelayMs(attempt: number): number {
+  return INITIAL_RETRY_DELAY_MS * 2 ** (attempt - 1);
+}
+
+function isRetriableFetchError(error: unknown): boolean {
+  return error instanceof TypeError || (error instanceof Error && error.name === "AbortError");
+}
+
+async function requestGraphQL<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  token: string,
+  context: GraphQLOperationContext,
+): Promise<T> {
+  const logger = context.logger ?? silentLogger;
+
+  for (let attempt = 1; attempt <= MAX_GRAPHQL_ATTEMPTS; attempt += 1) {
+    let response: Response;
+
+    try {
+      response = await fetch(GITHUB_GRAPHQL_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/vnd.github+json",
+          "User-Agent": "oddship-stargazers-action",
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (error: unknown) {
+      if (attempt < MAX_GRAPHQL_ATTEMPTS && isRetriableFetchError(error)) {
+        const delayMs = getRetryDelayMs(attempt);
+        const reason = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          `GitHub GraphQL ${context.operation} failed with ${reason}; retrying in ${delayMs}ms (next attempt ${attempt + 1}/${MAX_GRAPHQL_ATTEMPTS}).`,
+        );
+        await sleep(delayMs);
+        continue;
+      }
+
+      throw error;
+    }
+
+    if (!response.ok) {
+      if (attempt < MAX_GRAPHQL_ATTEMPTS && RETRYABLE_GRAPHQL_STATUSES.has(response.status)) {
+        const delayMs = getRetryDelayMs(attempt);
+        logger.warn(
+          `GitHub GraphQL ${context.operation} failed with ${response.status} ${response.statusText}; retrying in ${delayMs}ms (next attempt ${attempt + 1}/${MAX_GRAPHQL_ATTEMPTS}).`,
+        );
+        await sleep(delayMs);
+        continue;
+      }
+
+      throw new Error(`GitHub GraphQL request failed with ${response.status} ${response.statusText}.`);
+    }
+
+    const payload = (await response.json()) as { data?: T; errors?: Array<{ message: string }> };
+    if (payload.errors?.length) {
+      throw new Error(payload.errors.map((error) => error.message).join("; "));
+    }
+    if (!payload.data) {
+      throw new Error("GitHub GraphQL request returned no data.");
+    }
+
+    return payload.data;
   }
 
-  const payload = (await response.json()) as { data?: T; errors?: Array<{ message: string }> };
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).join("; "));
-  }
-  if (!payload.data) {
-    throw new Error("GitHub GraphQL request returned no data.");
-  }
-
-  return payload.data;
+  throw new Error(`GitHub GraphQL ${context.operation} exhausted retry attempts.`);
 }
 
 function normalizeOwnerType(value: string): OwnerSummary["type"] {
@@ -139,6 +197,10 @@ export async function listOwnedRepositories(
       query,
       { login: config.owner, cursor },
       config.token,
+      {
+        logger,
+        operation: `listing public repositories for ${config.owner}`,
+      },
     );
     const ownerNode: RepositoryOwnerResponse["repositoryOwner"] = data.repositoryOwner;
 
@@ -217,6 +279,10 @@ export async function fetchRecentStarsForRepository(
       limit: config.perRepoLimit,
     },
     config.token,
+    {
+      logger,
+      operation: `fetching recent stargazers for ${repo.nameWithOwner}`,
+    },
   );
 
   if (!data.repository) {

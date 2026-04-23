@@ -27577,28 +27577,68 @@ function renderRssFeed(data) {
 
 // src/github.ts
 var GITHUB_GRAPHQL_ENDPOINT = "https://api.github.com/graphql";
-async function requestGraphQL(query, variables, token) {
-  const response = await fetch(GITHUB_GRAPHQL_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/vnd.github+json",
-      "User-Agent": "oddship-stargazers-action"
-    },
-    body: JSON.stringify({ query, variables })
+var MAX_GRAPHQL_ATTEMPTS = 4;
+var INITIAL_RETRY_DELAY_MS = 1e3;
+var RETRYABLE_GRAPHQL_STATUSES = /* @__PURE__ */ new Set([500, 502, 503, 504]);
+async function sleep(ms) {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
-  if (!response.ok) {
-    throw new Error(`GitHub GraphQL request failed with ${response.status} ${response.statusText}.`);
+}
+function getRetryDelayMs(attempt) {
+  return INITIAL_RETRY_DELAY_MS * 2 ** (attempt - 1);
+}
+function isRetriableFetchError(error2) {
+  return error2 instanceof TypeError || error2 instanceof Error && error2.name === "AbortError";
+}
+async function requestGraphQL(query, variables, token, context) {
+  const logger = context.logger ?? silentLogger;
+  for (let attempt = 1; attempt <= MAX_GRAPHQL_ATTEMPTS; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(GITHUB_GRAPHQL_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/vnd.github+json",
+          "User-Agent": "oddship-stargazers-action"
+        },
+        body: JSON.stringify({ query, variables })
+      });
+    } catch (error2) {
+      if (attempt < MAX_GRAPHQL_ATTEMPTS && isRetriableFetchError(error2)) {
+        const delayMs = getRetryDelayMs(attempt);
+        const reason = error2 instanceof Error ? error2.message : String(error2);
+        logger.warn(
+          `GitHub GraphQL ${context.operation} failed with ${reason}; retrying in ${delayMs}ms (next attempt ${attempt + 1}/${MAX_GRAPHQL_ATTEMPTS}).`
+        );
+        await sleep(delayMs);
+        continue;
+      }
+      throw error2;
+    }
+    if (!response.ok) {
+      if (attempt < MAX_GRAPHQL_ATTEMPTS && RETRYABLE_GRAPHQL_STATUSES.has(response.status)) {
+        const delayMs = getRetryDelayMs(attempt);
+        logger.warn(
+          `GitHub GraphQL ${context.operation} failed with ${response.status} ${response.statusText}; retrying in ${delayMs}ms (next attempt ${attempt + 1}/${MAX_GRAPHQL_ATTEMPTS}).`
+        );
+        await sleep(delayMs);
+        continue;
+      }
+      throw new Error(`GitHub GraphQL request failed with ${response.status} ${response.statusText}.`);
+    }
+    const payload = await response.json();
+    if (payload.errors?.length) {
+      throw new Error(payload.errors.map((error2) => error2.message).join("; "));
+    }
+    if (!payload.data) {
+      throw new Error("GitHub GraphQL request returned no data.");
+    }
+    return payload.data;
   }
-  const payload = await response.json();
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error2) => error2.message).join("; "));
-  }
-  if (!payload.data) {
-    throw new Error("GitHub GraphQL request returned no data.");
-  }
-  return payload.data;
+  throw new Error(`GitHub GraphQL ${context.operation} exhausted retry attempts.`);
 }
 function normalizeOwnerType(value) {
   if (value === "User" || value === "Organization") {
@@ -27666,7 +27706,11 @@ async function listOwnedRepositories(config, logger = silentLogger) {
     const data = await requestGraphQL(
       query,
       { login: config.owner, cursor },
-      config.token
+      config.token,
+      {
+        logger,
+        operation: `listing public repositories for ${config.owner}`
+      }
     );
     const ownerNode = data.repositoryOwner;
     if (!ownerNode) {
@@ -27732,7 +27776,11 @@ async function fetchRecentStarsForRepository(config, repo, logger = silentLogger
       name: repo.name,
       limit: config.perRepoLimit
     },
-    config.token
+    config.token,
+    {
+      logger,
+      operation: `fetching recent stargazers for ${repo.nameWithOwner}`
+    }
   );
   if (!data.repository) {
     logger.warn(`Skipping ${repo.nameWithOwner}: repository no longer available.`);
