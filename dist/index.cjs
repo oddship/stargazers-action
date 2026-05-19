@@ -1357,9 +1357,9 @@ var require_timers = __commonJS({
       }
     }
     var Timeout = class {
-      constructor(callback, delay, opaque) {
+      constructor(callback, delay2, opaque) {
         this.callback = callback;
-        this.delay = delay;
+        this.delay = delay2;
         this.opaque = opaque;
         this.state = -2;
         this.refresh();
@@ -1378,8 +1378,8 @@ var require_timers = __commonJS({
       }
     };
     module2.exports = {
-      setTimeout(callback, delay, opaque) {
-        return delay < 1e3 ? setTimeout(callback, delay, opaque) : new Timeout(callback, delay, opaque);
+      setTimeout(callback, delay2, opaque) {
+        return delay2 < 1e3 ? setTimeout(callback, delay2, opaque) : new Timeout(callback, delay2, opaque);
       },
       clearTimeout(timeout) {
         if (timeout instanceof Timeout) {
@@ -10483,7 +10483,7 @@ var require_mock_utils = __commonJS({
       if (mockDispatch2.data.callback) {
         mockDispatch2.data = { ...mockDispatch2.data, ...mockDispatch2.data.callback(opts) };
       }
-      const { data: { statusCode, data, headers, trailers, error: error2 }, delay, persist } = mockDispatch2;
+      const { data: { statusCode, data, headers, trailers, error: error2 }, delay: delay2, persist } = mockDispatch2;
       const { timesInvoked, times } = mockDispatch2;
       mockDispatch2.consumed = !persist && timesInvoked >= times;
       mockDispatch2.pending = timesInvoked < times;
@@ -10492,10 +10492,10 @@ var require_mock_utils = __commonJS({
         handler.onError(error2);
         return true;
       }
-      if (typeof delay === "number" && delay > 0) {
+      if (typeof delay2 === "number" && delay2 > 0) {
         setTimeout(() => {
           handleReply(this[kDispatches]);
-        }, delay);
+        }, delay2);
       } else {
         handleReply(this[kDispatches]);
       }
@@ -28035,6 +28035,11 @@ async function loadStateFromFeedUrl(url) {
     source: `feed-url:${url}`
   };
 }
+var GITHUB_BRANCH_SAVE_MAX_ATTEMPTS = 4;
+var GITHUB_BRANCH_SAVE_CONFLICT_RETRY_DELAYS_MS = [250, 500, 1e3];
+async function delay(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 function githubBranchPermissionHint(status) {
   return status === 403 ? " Ensure workflow permissions include contents: write when using state_backend=github-branch." : "";
 }
@@ -28134,31 +28139,41 @@ async function loadStateFromGitHubBranch(config) {
 }
 async function saveStateToGitHubBranch(config, state) {
   await ensureBranchExists(config);
-  const existingResponse = await requestGitHubJson(
-    buildGitHubContentsUrl(config.repository, config.statePath, config.branch),
-    config.token
-  );
-  let sha;
-  if (existingResponse.ok) {
-    const payload = await existingResponse.json();
-    sha = payload.sha;
-  } else if (existingResponse.status !== 404) {
-    throw new Error(
-      `Could not inspect existing state file ${config.repository}@${config.branch}:${config.statePath}: ${existingResponse.status} ${existingResponse.statusText}.${githubBranchPermissionHint(existingResponse.status)}`
+  const encodedState = import_node_buffer.Buffer.from(serializeState(state), "utf8").toString("base64");
+  for (let attempt = 1; attempt <= GITHUB_BRANCH_SAVE_MAX_ATTEMPTS; attempt += 1) {
+    const existingResponse = await requestGitHubJson(
+      buildGitHubContentsUrl(config.repository, config.statePath, config.branch),
+      config.token
     );
-  }
-  const response = await requestGitHubJson(buildGitHubContentsUrl(config.repository, config.statePath), config.token, {
-    method: "PUT",
-    body: JSON.stringify({
-      message: config.commitMessage,
-      content: import_node_buffer.Buffer.from(serializeState(state), "utf8").toString("base64"),
-      branch: config.branch,
-      sha
-    })
-  });
-  if (!response.ok) {
+    let sha;
+    if (existingResponse.ok) {
+      const payload = await existingResponse.json();
+      sha = payload.sha;
+    } else if (existingResponse.status !== 404) {
+      throw new Error(
+        `Could not inspect existing state file ${config.repository}@${config.branch}:${config.statePath}: ${existingResponse.status} ${existingResponse.statusText}.${githubBranchPermissionHint(existingResponse.status)}`
+      );
+    }
+    const response = await requestGitHubJson(buildGitHubContentsUrl(config.repository, config.statePath), config.token, {
+      method: "PUT",
+      body: JSON.stringify({
+        message: config.commitMessage,
+        content: encodedState,
+        branch: config.branch,
+        sha
+      })
+    });
+    if (response.ok) {
+      return;
+    }
+    if (response.status === 409 && attempt < GITHUB_BRANCH_SAVE_MAX_ATTEMPTS) {
+      const delayMs = GITHUB_BRANCH_SAVE_CONFLICT_RETRY_DELAYS_MS[attempt - 1] ?? 1e3;
+      await delay(delayMs);
+      continue;
+    }
+    const retryNote = attempt > 1 ? ` after ${attempt} attempts` : "";
     throw new Error(
-      `Could not save state to ${config.repository}@${config.branch}:${config.statePath}: ${response.status} ${response.statusText}.${githubBranchPermissionHint(response.status)}`
+      `Could not save state to ${config.repository}@${config.branch}:${config.statePath}${retryNote}: ${response.status} ${response.statusText}.${githubBranchPermissionHint(response.status)}`
     );
   }
 }

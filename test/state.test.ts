@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { diffSnapshotAgainstState, ensureNoPendingState, extractEventIdsFromFeedXml, planNotification } from "../src/state.js";
-import type { LoadedState, StarEvent, StarsSnapshot } from "../src/types.js";
+import { diffSnapshotAgainstState, ensureNoPendingState, extractEventIdsFromFeedXml, planNotification, saveState } from "../src/state.js";
+import type { GitHubBranchStateConfig, LoadedState, SeenEventsState, StarEvent, StarsSnapshot } from "../src/types.js";
 
 function makeStar(id: string, starredAt: string): StarEvent {
   return {
@@ -167,4 +167,54 @@ test("planNotification creates a pending pre-send state and committed post-send 
     plan.postSendState.events.map((event) => event.id),
     ["new", "old"],
   );
+});
+
+test("saveState retries github-branch writes after a 409 conflict", async () => {
+  const config: GitHubBranchStateConfig = {
+    backend: "github-branch",
+    repository: "oddship/stargazers-action",
+    branch: "stargazers-state",
+    statePath: ".stargazers/state.json",
+    token: "test-token",
+    commitMessage: "chore: update stargazers notification state",
+    maxEntries: 500,
+  };
+  const state: SeenEventsState = {
+    version: 1,
+    updatedAt: "2026-05-19T00:00:00Z",
+    events: [{ id: "new", starredAt: "2026-05-18T23:59:00Z" }],
+  };
+
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const responses = [
+    new Response(JSON.stringify({ object: { sha: "branch-sha" } }), { status: 200 }),
+    new Response(JSON.stringify({ sha: "stale-sha", content: "e30=", encoding: "base64" }), { status: 200 }),
+    new Response(JSON.stringify({ message: "sha mismatch" }), { status: 409, statusText: "Conflict" }),
+    new Response(JSON.stringify({ sha: "fresh-sha", content: "e30=", encoding: "base64" }), { status: 200 }),
+    new Response(JSON.stringify({ content: { sha: "saved-sha" } }), { status: 200 }),
+  ];
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    calls.push({ url: String(input), init });
+    const response = responses.shift();
+    assert.ok(response, `unexpected fetch call for ${String(input)}`);
+    return response;
+  };
+
+  try {
+    await saveState(config, state);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 5);
+
+  const putCalls = calls.filter((call) => call.init?.method === "PUT");
+  assert.equal(putCalls.length, 2);
+
+  const firstBody = JSON.parse(String(putCalls[0]?.init?.body));
+  const secondBody = JSON.parse(String(putCalls[1]?.init?.body));
+  assert.equal(firstBody.sha, "stale-sha");
+  assert.equal(secondBody.sha, "fresh-sha");
 });

@@ -192,6 +192,13 @@ type GitHubContentResponse = {
   encoding: string;
 };
 
+const GITHUB_BRANCH_SAVE_MAX_ATTEMPTS = 4;
+const GITHUB_BRANCH_SAVE_CONFLICT_RETRY_DELAYS_MS = [250, 500, 1000] as const;
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function githubBranchPermissionHint(status: number): string {
   return status === 403 ? " Ensure workflow permissions include contents: write when using state_backend=github-branch." : "";
 }
@@ -311,34 +318,47 @@ async function loadStateFromGitHubBranch(config: GitHubBranchStateConfig): Promi
 async function saveStateToGitHubBranch(config: GitHubBranchStateConfig, state: SeenEventsState): Promise<void> {
   await ensureBranchExists(config);
 
-  const existingResponse = await requestGitHubJson(
-    buildGitHubContentsUrl(config.repository, config.statePath, config.branch),
-    config.token,
-  );
+  const encodedState = Buffer.from(serializeState(state), "utf8").toString("base64");
 
-  let sha: string | undefined;
-  if (existingResponse.ok) {
-    const payload = (await existingResponse.json()) as GitHubContentResponse;
-    sha = payload.sha;
-  } else if (existingResponse.status !== 404) {
-    throw new Error(
-      `Could not inspect existing state file ${config.repository}@${config.branch}:${config.statePath}: ${existingResponse.status} ${existingResponse.statusText}.${githubBranchPermissionHint(existingResponse.status)}`,
+  for (let attempt = 1; attempt <= GITHUB_BRANCH_SAVE_MAX_ATTEMPTS; attempt += 1) {
+    const existingResponse = await requestGitHubJson(
+      buildGitHubContentsUrl(config.repository, config.statePath, config.branch),
+      config.token,
     );
-  }
 
-  const response = await requestGitHubJson(buildGitHubContentsUrl(config.repository, config.statePath), config.token, {
-    method: "PUT",
-    body: JSON.stringify({
-      message: config.commitMessage,
-      content: Buffer.from(serializeState(state), "utf8").toString("base64"),
-      branch: config.branch,
-      sha,
-    }),
-  });
+    let sha: string | undefined;
+    if (existingResponse.ok) {
+      const payload = (await existingResponse.json()) as GitHubContentResponse;
+      sha = payload.sha;
+    } else if (existingResponse.status !== 404) {
+      throw new Error(
+        `Could not inspect existing state file ${config.repository}@${config.branch}:${config.statePath}: ${existingResponse.status} ${existingResponse.statusText}.${githubBranchPermissionHint(existingResponse.status)}`,
+      );
+    }
 
-  if (!response.ok) {
+    const response = await requestGitHubJson(buildGitHubContentsUrl(config.repository, config.statePath), config.token, {
+      method: "PUT",
+      body: JSON.stringify({
+        message: config.commitMessage,
+        content: encodedState,
+        branch: config.branch,
+        sha,
+      }),
+    });
+
+    if (response.ok) {
+      return;
+    }
+
+    if (response.status === 409 && attempt < GITHUB_BRANCH_SAVE_MAX_ATTEMPTS) {
+      const delayMs = GITHUB_BRANCH_SAVE_CONFLICT_RETRY_DELAYS_MS[attempt - 1] ?? 1000;
+      await delay(delayMs);
+      continue;
+    }
+
+    const retryNote = attempt > 1 ? ` after ${attempt} attempts` : "";
     throw new Error(
-      `Could not save state to ${config.repository}@${config.branch}:${config.statePath}: ${response.status} ${response.statusText}.${githubBranchPermissionHint(response.status)}`,
+      `Could not save state to ${config.repository}@${config.branch}:${config.statePath}${retryNote}: ${response.status} ${response.statusText}.${githubBranchPermissionHint(response.status)}`,
     );
   }
 }
